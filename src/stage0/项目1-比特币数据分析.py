@@ -7,17 +7,46 @@
 4. 计算最大回撤
 """
 
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+from __future__ import annotations
+
+import logging
 from datetime import datetime, timedelta
 
-# 设置中文显示
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei']
-plt.rcParams['axes.unicode_minus'] = False
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from matplotlib.font_manager import fontManager
+
+logger = logging.getLogger(__name__)
 
 
-def fetch_binance_data(symbol='BTCUSDT', interval='1d', days=365):
+def _configure_matplotlib_fonts() -> None:
+    candidate_fonts = [
+        "Microsoft YaHei",
+        "SimHei",
+        "PingFang SC",
+        "Hiragino Sans GB",
+        "STHeiti",
+        "Arial Unicode MS",
+    ]
+    available_fonts: list[str] = [font.name for font in fontManager.ttflist]
+    chosen_font: str | None = None
+    for font_name in candidate_fonts:
+        if font_name in available_fonts:
+            chosen_font = font_name
+            break
+    if chosen_font is not None:
+        logger.info("使用 Matplotlib 字体: %s", chosen_font)
+        plt.rcParams["font.sans-serif"] = [chosen_font]
+    else:
+        logger.warning("未找到候选中文字体，可能无法正常显示中文。")
+    plt.rcParams["axes.unicode_minus"] = False
+
+
+_configure_matplotlib_fonts()
+
+
+def fetch_binance_data(symbol: str = "BTCUSDT", interval: str = "1d", days: int = 365) -> pd.DataFrame:
     """
     从币安获取历史K线数据
     
@@ -28,32 +57,38 @@ def fetch_binance_data(symbol='BTCUSDT', interval='1d', days=365):
     """
     try:
         import ccxt
-        
+        from ccxt.base.errors import NetworkError, RequestTimeout
+
         exchange = ccxt.binance()
-        
-        # 计算开始时间
+
         since = exchange.parse8601((datetime.now() - timedelta(days=days)).isoformat())
-        
-        # 获取K线数据
-        ohlcv = exchange.fetch_ohlcv(symbol, interval, since=since)
-        
-        # 转换为DataFrame
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        
+
+        try:
+            ohlcv = exchange.fetch_ohlcv(symbol, interval, since=since)
+        except (RequestTimeout, NetworkError) as error:
+            logger.error("从币安获取数据失败，使用模拟数据: %s", error, exc_info=True)
+            print("⚠️ 从币安获取实时数据失败，改用模拟数据\n")
+            return generate_mock_data(days)
+
+        df = pd.DataFrame(
+            ohlcv,
+            columns=["timestamp", "open", "high", "low", "close", "volume"],
+        )
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df.set_index("timestamp", inplace=True)
+
         print(f"✅ 成功获取 {symbol} 数据，共 {len(df)} 条记录")
         print(f"时间范围：{df.index[0]} 至 {df.index[-1]}\n")
-        
+
         return df
-    
+
     except ImportError:
         print("⚠️ 未安装ccxt库，使用模拟数据")
         print("提示：运行 pip install ccxt 安装\n")
         return generate_mock_data(days)
 
 
-def generate_mock_data(days=365):
+def generate_mock_data(days: int = 365) -> pd.DataFrame:
     """
     生成模拟的BTC价格数据（用于演示）
     """
@@ -75,7 +110,7 @@ def generate_mock_data(days=365):
     return df
 
 
-def calculate_returns(df):
+def calculate_returns(df: pd.DataFrame) -> pd.DataFrame:
     """
     计算收益率
     """
@@ -88,7 +123,7 @@ def calculate_returns(df):
     return df
 
 
-def calculate_statistics(df):
+def calculate_statistics(df: pd.DataFrame) -> dict[str, float]:
     """
     计算基本统计量
     """
@@ -107,7 +142,7 @@ def calculate_statistics(df):
     return stats
 
 
-def calculate_max_drawdown(df):
+def calculate_max_drawdown(df: pd.DataFrame) -> tuple[float, pd.Timestamp, pd.Series]:
     """
     计算最大回撤
     最大回撤 = (谷底价格 - 峰顶价格) / 峰顶价格
@@ -122,7 +157,7 @@ def calculate_max_drawdown(df):
     return max_dd, max_dd_date, drawdown
 
 
-def plot_analysis(df, stats, drawdown):
+def plot_analysis(df: pd.DataFrame, stats: dict[str, float], drawdown: pd.Series) -> None:
     """
     绘制综合分析图表
     """
@@ -195,7 +230,7 @@ def plot_analysis(df, stats, drawdown):
     print("\n📊 分析图表已保存：BTC价格分析报告.png")
 
 
-def main():
+def main() -> None:
     """
     主函数
     """
