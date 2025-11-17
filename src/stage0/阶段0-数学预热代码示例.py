@@ -6,9 +6,15 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import platform
 
 # 设置中文字体（Windows）
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei']
+if platform.system() == "Darwin":
+    plt.rcParams['font.sans-serif'] = ['PingFang SC', 'Heiti SC', 'Songti SC', 'Arial Unicode MS']
+elif platform.system() == "Windows":
+    plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei']
+else:
+    plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Noto Sans CJK SC', 'SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
 
