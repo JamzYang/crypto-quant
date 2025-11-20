@@ -11,8 +11,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 
 from src.stage2.data.loader import add_return_columns, load_ohlcv_csv
 from src.stage2.strategies.ma_trend import MATrendConfig, MATrendStrategy
@@ -129,17 +131,17 @@ def run_ma_trend_backtest(
             import matplotlib.pyplot as plt
 
             plt.figure(figsize=(10, 6))
-            plt.plot(data.index, data["bh_equity"], label="简单持有", alpha=0.7)
-            plt.plot(data.index, data["strategy_equity"], label="双均线策略", alpha=0.9)
-            plt.title("BTC 双均线趋势策略 vs 简单持有")
-            plt.xlabel("日期")
-            plt.ylabel("资金曲线")
+            plt.plot(data.index, data["bh_equity"], label="Buy and Hold", alpha=0.7)
+            plt.plot(data.index, data["strategy_equity"], label="MA Trend Strategy", alpha=0.9)
+            plt.title("BTC MA Trend Strategy vs Buy and Hold")
+            plt.xlabel("Date")
+            plt.ylabel("Equity Curve")
             plt.legend()
             plt.grid(True, alpha=0.3)
             plt.tight_layout()
             plt.show()
         except ImportError:
-            print("未安装 matplotlib，跳过画图。")
+            print("matplotlib is not installed, skip plotting.")
 
     return data, stats
 
@@ -166,6 +168,258 @@ def print_stats(stats: Dict[str, Dict[str, float]]) -> None:
         print(f"最大回撤:    {_format_pct(s.get('max_drawdown', np.nan))}")
 
 
+def _plot_kline_with_signals(
+    data: pd.DataFrame,
+    output_dir: Path,
+    filename: str = "ma_trend_kline.png",
+) -> Path:
+    """生成带双均线与买卖点标记的 K 线图并保存到指定目录。"""
+    required_price_cols = ["open", "high", "low", "close"]
+    missing_cols = [col for col in required_price_cols if col not in data.columns]
+    if missing_cols:
+        raise KeyError(f"绘制 K 线图需要列 {required_price_cols}，当前缺少: {missing_cols}")
+
+    for col in ["ma_short", "ma_long", "position", "golden_cross", "death_cross"]:
+        if col not in data.columns:
+            raise KeyError(f"绘制信号图需要列: {col}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / filename
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # 绘制 K 线：上下影线 + 实体
+    up = data["close"] >= data["open"]
+    down = ~up
+
+    ax.vlines(data.index, data["low"], data["high"], color="black", linewidth=0.5)
+
+    ax.bar(
+        data.index[up],
+        (data.loc[up, "close"] - data.loc[up, "open"]),
+        bottom=data.loc[up, "open"],
+        width=0.8,
+        color="red",
+        align="center",
+        edgecolor="none",
+    )
+    ax.bar(
+        data.index[down],
+        (data.loc[down, "open"] - data.loc[down, "close"]),
+        bottom=data.loc[down, "close"],
+        width=0.8,
+        color="green",
+        align="center",
+        edgecolor="none",
+    )
+
+    # 绘制短期 / 长期均线
+    ax.plot(data.index, data["ma_short"], label="Short MA", color="orange", linewidth=1.0)
+    ax.plot(data.index, data["ma_long"], label="Long MA", color="blue", linewidth=1.0)
+
+    # 金叉 / 死叉标记（用收盘价位置）
+    golden_idx = data.index[data["golden_cross"]]
+    death_idx = data.index[data["death_cross"]]
+    ax.scatter(
+        golden_idx,
+        data.loc[golden_idx, "close"],
+        marker="^",
+        color="gold",
+        s=50,
+        label="Golden Cross",
+        zorder=5,
+    )
+    ax.scatter(
+        death_idx,
+        data.loc[death_idx, "close"],
+        marker="v",
+        color="black",
+        s=50,
+        label="Death Cross",
+        zorder=5,
+    )
+
+    # 买入 / 卖出点：根据持仓变动
+    position_change = data["position"].diff().fillna(data["position"])
+    buy_mask = position_change == 1
+    sell_mask = position_change == -1
+
+    buy_idx = data.index[buy_mask]
+    sell_idx = data.index[sell_mask]
+    ax.scatter(
+        buy_idx,
+        data.loc[buy_idx, "close"] * 0.995,
+        marker="^",
+        color="green",
+        s=60,
+        label="Buy",
+        zorder=6,
+    )
+    ax.scatter(
+        sell_idx,
+        data.loc[sell_idx, "close"] * 1.005,
+        marker="v",
+        color="red",
+        s=60,
+        label="Sell",
+        zorder=6,
+    )
+
+    ax.set_title("BTC MA Trend Strategy - K Line and Signals")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Price")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.autofmt_xdate()
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+
+    return output_path
+
+
+def _plot_interactive_kline_with_signals(
+    data: pd.DataFrame,
+    output_path: Path,
+) -> Path:
+    """使用 Plotly 生成交互式 K 线与信号图并保存为 HTML。
+
+    图中包含：
+    - K 线（OHLC）
+    - 短期 / 长期均线
+    - 金叉 / 死叉位置
+    - 买入 / 卖出点
+    """
+    required_price_cols = ["open", "high", "low", "close"]
+    missing_cols = [col for col in required_price_cols if col not in data.columns]
+    if missing_cols:
+        raise KeyError(f"Interactive K-line requires columns {required_price_cols}, missing: {missing_cols}")
+
+    for col in ["ma_short", "ma_long", "position", "golden_cross", "death_cross"]:
+        if col not in data.columns:
+            raise KeyError(f"Interactive K-line requires column: {col}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig = go.Figure()
+
+    # 蜡烛图
+    fig.add_trace(
+        go.Candlestick(
+            x=data.index,
+            open=data["open"],
+            high=data["high"],
+            low=data["low"],
+            close=data["close"],
+            name="Price",
+            opacity=0.8,
+        )
+    )
+
+    # 均线
+    fig.add_trace(
+        go.Scatter(
+            x=data.index,
+            y=data["ma_short"],
+            mode="lines",
+            name="Short MA",
+            line=dict(color="orange", width=1),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=data.index,
+            y=data["ma_long"],
+            mode="lines",
+            name="Long MA",
+            line=dict(color="blue", width=1),
+        )
+    )
+
+    # 金叉 / 死叉
+    golden_mask = data["golden_cross"]
+    death_mask = data["death_cross"]
+    fig.add_trace(
+        go.Scatter(
+            x=data.index[golden_mask],
+            y=data.loc[golden_mask, "close"],
+            mode="markers",
+            name="Golden Cross",
+            marker=dict(
+                symbol="triangle-up",
+                color="gold",
+                size=14,
+                line=dict(color="white", width=1),
+            ),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=data.index[death_mask],
+            y=data.loc[death_mask, "close"],
+            mode="markers",
+            name="Death Cross",
+            marker=dict(
+                symbol="triangle-down",
+                color="black",
+                size=14,
+                line=dict(color="white", width=1),
+            ),
+        )
+    )
+
+    # 买入 / 卖出点：根据持仓变动
+    position_change = data["position"].diff().fillna(data["position"])
+    buy_mask = position_change == 1
+    sell_mask = position_change == -1
+
+    fig.add_trace(
+        go.Scatter(
+            x=data.index[buy_mask],
+            y=data.loc[buy_mask, "close"],
+            mode="markers",
+            name="Buy",
+            marker=dict(
+                symbol="triangle-up",
+                color="green",
+                size=15,
+                line=dict(color="white", width=1),
+            ),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=data.index[sell_mask],
+            y=data.loc[sell_mask, "close"],
+            mode="markers",
+            name="Sell",
+            marker=dict(
+                symbol="triangle-down",
+                color="red",
+                size=15,
+                line=dict(color="white", width=1),
+            ),
+        )
+    )
+
+    fig.update_layout(
+        title="BTC MA Trend Strategy - Interactive K Line and Signals",
+        xaxis_title="Date",
+        yaxis_title="Price",
+        xaxis_rangeslider_visible=False,
+        template="plotly_white",
+        height=800,
+    )
+
+    # 默认聚焦在最近一段数据，避免全历史压缩在一起导致线过陡
+    if len(data.index) > 200:
+        fig.update_xaxes(range=[data.index[-200], data.index[-1]])
+
+    # 使用 inline 模式嵌入 Plotly JS，生成的 HTML 可单文件离线查看
+    fig.write_html(str(output_path), include_plotlyjs="inline")
+    return output_path
+
+
 def main() -> None:
     """命令行入口函数。
 
@@ -175,6 +429,8 @@ def main() -> None:
     # 通过文件位置反推项目根目录: .../crypto-quant/src/stage2/backtests/*.py
     project_root = Path(__file__).resolve().parents[3]
     default_csv = project_root / "dist" / "btc_data.csv"
+    kline_dir = project_root / "dist" / "stage2"
+    interactive_path = kline_dir / "ma_trend_kline_interactive.html"
 
     print("使用的数据文件:", default_csv)
 
@@ -191,6 +447,20 @@ def main() -> None:
     )
 
     print_stats(stats)
+
+    # 生成并保存带信号的静态 K 线图
+    try:
+        kline_path = _plot_kline_with_signals(data, kline_dir)
+        print(f"K 线图已保存到: {kline_path}")
+    except KeyError as exc:
+        print(f"生成 K 线图失败: {exc}")
+
+    # 生成交互式 K 线 HTML
+    try:
+        interactive = _plot_interactive_kline_with_signals(data, interactive_path)
+        print(f"交互式 K 线图已保存到: {interactive}")
+    except KeyError as exc:
+        print(f"生成交互式 K 线图失败: {exc}")
 
     # 打印尾部几行，方便快速查看结果是否合理
     cols_to_show = [
